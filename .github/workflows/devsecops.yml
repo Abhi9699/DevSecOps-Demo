@@ -73,6 +73,7 @@ jobs:
 
   garak-security-scan:
     name: LLM/API Security Scan (Garak REST)
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     needs: build-test-lint
     if: ${{ always() }}
@@ -119,7 +120,6 @@ jobs:
           python -m pip install garak==0.12.0
 
       - name: Run Garak Security Scan and Copy Report to CWD
-        timeout-minutes: 4
         run: |
           garak --model_type rest -G garak-rest-config.json \
                 --probes goodside.WhoIsRiley \

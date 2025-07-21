@@ -97,7 +97,7 @@ def build_prompt(trivy, semgrep, trufflehog, zap, garak):
     prompt += "---\nHighlight the most urgent actions for the dev team. End with a one-paragraph summary if possible."
     return prompt
 
-def summarize_with_gemini(prompt, api_key, model_name="gemini-1.5-flash"):
+def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel(model_name)

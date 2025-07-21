@@ -1,0 +1,341 @@
+name: DevSecOps Security Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+jobs:
+  build-test-lint:
+    name: Build, Lint, and Test Web App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v3
+
+      - name: Cache npm Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: Lint Codebase
+        run: npm run lint
+
+      - name: Build Application
+        run: npm run build
+
+      - name: Run Unit Tests (Jest)
+        run: npm test
+
+  trufflehog-secrets-scan:
+    name: Secret Scanning – TruffleHog
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download TruffleHog CLI
+        run: |
+          wget -O trufflehog https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog-linux-amd64
+          chmod +x trufflehog
+
+      - name: Run TruffleHog Secrets Scan
+        run: |
+          ./trufflehog filesystem --json . > trufflehog-report.json || true
+
+      - name: Upload TruffleHog JSON Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trufflehog-results
+          path: trufflehog-report.json
+
+  garak-security-scan:
+    name: LLM/API Security Scan (Garak REST)
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    if: ${{ always() }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start web app for Garak scan
+        run: |
+          npm start > webapp-garak.log 2>&1 &
+          tries=0
+          max_tries=20
+          until curl -sf http://localhost:3000/ > /dev/null; do
+            sleep 3
+            tries=$((tries+1))
+            echo "Waiting for localhost:3000 for Garak... try $tries"
+            if [ $tries -ge $max_tries ]; then
+              echo "::error ::App did not start in time for Garak."
+              cat webapp-garak.log || true
+              exit 1
+            fi
+          done
+          echo "Web app ready for Garak."
+
+      - name: Setup Python for Garak
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Garak v0.12.0
+        run: |
+          python -m pip install garak==0.12.0
+
+      - name: Run Garak Security Scan and Copy Report to CWD
+        run: |
+          garak --model_type rest -G garak-rest-config.json \
+                --probes goodside.WhoIsRiley \
+                --generations 1 -v \
+                --report_prefix garak-run \
+          || echo "Garak scan step had a nonzero exit code, continuing to report collection."
+
+          LATEST_REPORT=$(ls -t $HOME/.local/share/garak/garak_runs/*.report.jsonl | head -n 1)
+          if [ -f "$LATEST_REPORT" ]; then
+            cp "$LATEST_REPORT" garak-report.jsonl
+            echo "Garak report copied to ./garak-report.jsonl"
+          else
+            echo "Garak report missing—generating empty artifact."
+            echo "[]" > garak-report.jsonl
+          fi
+
+      - name: Upload Garak Scan Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: garak-results
+          path: garak-report.jsonl
+
+  dynamic-security-scan:
+    name: DAST - ZAP Scan
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start web app for ZAP scan
+        run: |
+          npm start > webapp-zap.log 2>&1 &
+          tries=0
+          max_tries=20
+          until curl -sf http://localhost:3000/ > /dev/null; do
+            sleep 3
+            tries=$((tries+1))
+            echo "Waiting for localhost:3000 for ZAP... try $tries"
+            if [ $tries -ge $max_tries ]; then
+              echo "::error ::App did not start in time for ZAP."
+              cat webapp-zap.log || true
+              exit 1
+            fi
+          done
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000'
+          allow_issue_writing: false
+          artifact_name: zap-reports
+
+  trivy-scan:
+    name: SCA/IaC - Trivy Scan
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Trivy File System Scan (Docker)
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace ghcr.io/aquasecurity/trivy:latest fs /workspace --format json --output /workspace/trivy-results.json --list-all-pkgs
+
+      - name: Upload Trivy Scan Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.json
+
+  semgrep-sast:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-
+
+      - name: Setup Python (for Semgrep CLI)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep SAST (JSON)
+        run: npm run lint && semgrep --config p/default --json -o semgrep.json || true
+
+      - name: Upload Semgrep JSON Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep.json
+
+  ai-security-summary:
+    name: AI Security Summary (Gemini)
+    runs-on: ubuntu-latest
+    needs:
+      - trivy-scan
+      - semgrep-sast
+      - trufflehog-secrets-scan
+      - dynamic-security-scan
+      - garak-security-scan
+    if: ${{ always() }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download All Scan Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Gemini API Client
+        run: pip install google-generativeai
+
+      - name: Run Gemini AI Summarization Script
+        run: |
+          python gemini_security_summary.py \
+            --trivy ./artifacts/trivy-results/trivy-results.json \
+            --semgrep ./artifacts/semgrep-results/semgrep.json \
+            --trufflehog ./artifacts/trufflehog-results/trufflehog-report.json \
+            --zap ./artifacts/zap-reports/report_json.json \
+            --garak ./artifacts/garak-results/garak-report.jsonl \
+            --output ai-security-summary.md
+
+      - name: Add AI Security Summary to Job Summary
+        run: cat ai-security-summary.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload AI Security Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-security-summary
+          path: ai-security-summary.md
+
+  deploy-staging:
+    name: Deploy to Staging (Automated)
+    runs-on: ubuntu-latest
+    needs: ai-security-summary
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download AI Security Summary
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-security-summary
+
+      - name: Display Security Summary
+        run: cat ai-security-summary.md
+
+      - name: Deploy to Staging (Dummy)
+        run: echo "🚀 Automated deployment to staging environment."
+
+  deploy-production:
+    name: Deploy to Production (Manual Approval)
+    runs-on: ubuntu-latest
+    needs: ai-security-summary
+    environment:
+      name: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download AI Security Summary
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-security-summary
+
+      - name: Display Security Summary
+        run: cat ai-security-summary.md
+
+      - name: Deploy to Production (Dummy)
+        run: echo "🚦 Manual approval granted. Deploying to production..."

@@ -58,7 +58,10 @@ jobs:
 
       - name: Download TruffleHog CLI
         run: |
-          wget -O trufflehog https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog-linux-amd64
+          # Get latest version number from GitHub API
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest | grep tag_name | cut -d '"' -f 4)
+          FILENAME="trufflehog_${LATEST_VERSION#v}_linux_amd64"
+          wget -O trufflehog "https://github.com/trufflesecurity/trufflehog/releases/download/$LATEST_VERSION/$FILENAME"
           chmod +x trufflehog
 
       - name: Run TruffleHog Secrets Scan

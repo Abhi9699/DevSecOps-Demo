@@ -102,7 +102,7 @@ def build_prompt(trivy, semgrep, trufflehog, zap, garak):
 
     return prompt
 
-def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-pro"):
+def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel(model_name)

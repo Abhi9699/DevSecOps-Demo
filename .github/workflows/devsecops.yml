@@ -56,17 +56,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Download TruffleHog CLI
+      - name: Install TruffleHog (Official Script)
         run: |
-          # Get latest version number from GitHub API
-          LATEST_VERSION=$(curl -s https://api.github.com/repos/trufflesecurity/trufflehog/releases/latest | grep tag_name | cut -d '"' -f 4)
-          FILENAME="trufflehog_${LATEST_VERSION#v}_linux_amd64"
-          wget -O trufflehog "https://github.com/trufflesecurity/trufflehog/releases/download/$LATEST_VERSION/$FILENAME"
-          chmod +x trufflehog
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Run TruffleHog Secrets Scan
         run: |
-          ./trufflehog filesystem --json . > trufflehog-report.json || true
+          trufflehog filesystem --json . > trufflehog-report.json || true
 
       - name: Upload TruffleHog JSON Report
         if: always()

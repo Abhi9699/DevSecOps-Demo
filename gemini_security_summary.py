@@ -47,95 +47,90 @@ def load_jsonl(path):
 
 def standardize_garak_findings(garak_results):
     """
-    Converts Garak JSONL entries into standardized vulnerability findings,
-    parsing both explicit FAIL fields and detector_results with 0.0 values
-    indicating vulnerabilities.
+    Convert raw Garak entries into structured findings, preserving
+    all key details and passing them for AI summarization.
+    Detects vulnerabilities based on explicit FAIL indicators and 
+    detector_results (e.g., zero scores).
     """
     findings = []
-
     for entry in garak_results:
-        # Detect explicit fail indicators
-        result = str(entry.get('result', '')).upper()
-        outcome = str(entry.get('outcome', '')).upper()
-        status = str(entry.get('status', '')).upper()
+        # Check explicit failure indicators
+        failure_fields = ['result', 'outcome', 'status']
+        is_vulnerable = any(str(entry.get(f, '')).upper() == 'FAIL' for f in failure_fields)
 
-        is_fail = result == 'FAIL' or outcome == 'FAIL' or status == 'FAIL'
-
-        # Check detector_results for zero values indicating a vulnerability
-        # detector_results example: {"goodside.RileyIsnt": [0.0]}
+        # Check detector_results for 0.0 scores meaning failure
         detector_results = entry.get('detector_results', {})
-        if not is_fail and isinstance(detector_results, dict):
-            for detector_name, scores in detector_results.items():
-                # Scores may be a list of floats or single float
-                if isinstance(scores, list):
-                    if any(float(score) == 0.0 for score in scores):
-                        is_fail = True
-                        break
-                else:
-                    try:
-                        if float(scores) == 0.0:
-                            is_fail = True
-                            break
-                    except Exception:
-                        pass
+        if not is_vulnerable and isinstance(detector_results, dict):
+            for scores in detector_results.values():
+                if isinstance(scores, list) and any(float(score) == 0.0 for score in scores):
+                    is_vulnerable = True
+                    break
+                elif isinstance(scores, (float, int)) and float(scores) == 0.0:
+                    is_vulnerable = True
+                    break
 
-        # Additional heuristic: check common keywords in entries (fail, error, leak, jail, unsafe)
-        if not is_fail:
-            keywords = ['fail', 'error', 'leak', 'jailbreak', 'unsafe']
-            if any(
-                any(kw in str(v).lower() for kw in keywords)
+        # Include heuristic keywords
+        keywords = ['fail', 'error', 'leak', 'jailbreak', 'unsafe']
+        if not is_vulnerable:
+            values_to_check = (
+                v.lower() if isinstance(v, str) else json.dumps(v).lower()
                 for v in entry.values()
-                if isinstance(v, (str, list))
-            ):
-                is_fail = True
-
-        if is_fail:
-            probe = entry.get('probe') or entry.get('probes') or "Unknown Probe"
-            detector = entry.get('detector') or entry.get('detectors') or "Unknown Detector"
-            issue_title = f"Garak probe '{probe}' detected an issue in detector '{detector}'"
-            severity = "High"
-            impact = (
-                "AI model failed Garak security probe, indicating potential vulnerabilities "
-                "such as privacy leaks, prompt injections, unsafe outputs, or jailbreaking."
+                if isinstance(v, (str, list, dict))
             )
-            actionable = [
-                "Review Garak detailed output and model behavior to determine cause.",
-                "Consider applying prompt filtering, fine-tuning, or further red-teaming.",
-                "Monitor future scans to validate remediation effectiveness."
-            ]
-            findings.append({
-                "issue_title": issue_title,
-                "severity": severity,
-                "impact": impact,
-                "actionable": actionable,
-                "details": entry
-            })
+            if any(any(kw in val for kw in keywords) for val in values_to_check):
+                is_vulnerable = True
 
+        if is_vulnerable:
+            findings.append({
+                "probe": entry.get("probe") or entry.get("probes") or "Unknown",
+                "detector": entry.get("detector") or entry.get("detectors") or
+                            next(iter(detector_results), "Unknown") if detector_results else "Unknown",
+                "prompt": entry.get("prompt") or "",
+                "output": entry.get("output") or "",
+                "detector_results": detector_results,
+                "full_entry": entry  # Pass the raw entry for AI's reference
+            })
     print(f"[INFO] Garak findings detected: {len(findings)}")
     return findings
 
 
 def build_prompt(trivy, semgrep, trufflehog, zap, garak_findings):
+    """
+    Builds a detailed prompt for Gemini AI to generate a professional
+    security report, explicitly instructing the AI to interpret Garak findings.
+    """
+
+    def json_snippet(obj):
+        try:
+            return json.dumps(obj, indent=2)[:5000]
+        except Exception:
+            return "[]"
+
     prompt = (
-        "You are an expert security AI. Using ONLY the JSON scan findings below, generate a concise, inclusive Markdown security report designed for all audiences (engineers, QA, managers, security leads):\n\n"
-        "- Start with a concise, plain English summary describing general security health, presence or absence of critical/high issues, and next actions. Do not repeat issue findings in the summary.\n"
-        "- For each tool below, present findings grouped and numbered (provide for each finding: issue title, severity, impact in plain language, and actionable bullets for remediation based only on data from the JSON; include file/line if available).\n"
-        "- Any findings from Garak (including jailbreaks, privacy leaks, unsafe outputs) must be treated as critical security issues and highlighted clearly.\n"
-        "- Use readable Markdown, concise and clear.\n"
-        "- Do NOT generate a title (it will be inserted by the pipeline script).\n"
-        "\n"
+        "You are an expert AI security analyst. Using ONLY the JSON scan findings below from multiple tools, "
+        "create a professional Markdown security report for engineers, QA, managers, and security leads.\n\n"
+        "- Begin with a concise, clear summary describing overall security posture, presence or absence of critical/high issues, and recommended next steps.\n"
+        "- For each tool, list findings clearly and numbered:\n"
+        "  * For **Garak**, use the detailed data (probe, detector, prompt, output, detector results) to **write a specific vulnerability title and explain the exact nature and impact of the AI vulnerability detected**.\n"
+        "  * Provide clear, actionable remediation advice tailored to the finding.\n"
+        "- Include relevant excerpts like probes and model output for clarity.\n"
+        "- Use professional, accessible language; avoid generic or repetitive phrasing.\n"
+        "- DO NOT generate a report title (it will be added separately).\n\n"
         "## CI/CD Pipeline Scan Data (JSON below):\n"
-        "Trivy:\n" + json.dumps(trivy, indent=2)[:5000] + "\n\n"
-        "Semgrep:\n" + json.dumps(semgrep, indent=2)[:5000] + "\n\n"
-        "TruffleHog:\n" + json.dumps(trufflehog, indent=2)[:5000] + "\n\n"
-        "ZAP:\n" + json.dumps(zap, indent=2)[:5000] + "\n\n"
-        "Garak:\n" + json.dumps(garak_findings, indent=2)[:5000] + "\n"
+        "Trivy:\n" + json_snippet(trivy) + "\n\n"
+        "Semgrep:\n" + json_snippet(semgrep) + "\n\n"
+        "TruffleHog:\n" + json_snippet(trufflehog) + "\n\n"
+        "ZAP:\n" + json_snippet(zap) + "\n\n"
+        "Garak (Detailed AI Security Findings):\n" + json_snippet(garak_findings) + "\n"
         "---"
     )
     return prompt
 
 
 def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
+    """
+    Calls Google Gemini generative model to create the summary.
+    """
     genai.configure(api_key=api_key)
     try:
         model = genai.GenerativeModel(model_name)
@@ -148,7 +143,7 @@ def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AI-driven security scan report for CI/CD pipelines with fixed title.")
+    parser = argparse.ArgumentParser(description="Generate AI-driven CI/CD security scan report with detailed Garak findings.")
     parser.add_argument("--trivy", required=True)
     parser.add_argument("--semgrep", required=True)
     parser.add_argument("--trufflehog", required=True)
@@ -163,7 +158,6 @@ def main():
     zap = load_json(args.zap)
     garak_raw = load_jsonl(args.garak)
 
-    # Convert Garak raw results into standardized findings
     garak_findings = standardize_garak_findings(garak_raw)
 
     api_key = os.environ.get("GEMINI_API_KEY")

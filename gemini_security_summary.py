@@ -47,26 +47,47 @@ def load_jsonl(path):
 
 def standardize_garak_findings(garak_results):
     """
-    Convert raw Garak JSONL entries into standardized vulnerability findings.
-    Detects failures and potential AI security issues, and formats them properly.
+    Converts Garak JSONL entries into standardized vulnerability findings,
+    parsing both explicit FAIL fields and detector_results with 0.0 values
+    indicating vulnerabilities.
     """
     findings = []
+
     for entry in garak_results:
-        # Determine if this entry is a fail/vulnerability
+        # Detect explicit fail indicators
         result = str(entry.get('result', '')).upper()
         outcome = str(entry.get('outcome', '')).upper()
         status = str(entry.get('status', '')).upper()
 
         is_fail = result == 'FAIL' or outcome == 'FAIL' or status == 'FAIL'
 
-        # Additional heuristic: check relevant fields for "fail" keyword
+        # Check detector_results for zero values indicating a vulnerability
+        # detector_results example: {"goodside.RileyIsnt": [0.0]}
+        detector_results = entry.get('detector_results', {})
+        if not is_fail and isinstance(detector_results, dict):
+            for detector_name, scores in detector_results.items():
+                # Scores may be a list of floats or single float
+                if isinstance(scores, list):
+                    if any(float(score) == 0.0 for score in scores):
+                        is_fail = True
+                        break
+                else:
+                    try:
+                        if float(scores) == 0.0:
+                            is_fail = True
+                            break
+                    except Exception:
+                        pass
+
+        # Additional heuristic: check common keywords in entries (fail, error, leak, jail, unsafe)
         if not is_fail:
-            fail_keywords = ['fail', 'error', 'leak', 'unsafe', 'jailbreak']
-            for k in ('detector', 'probe', 'result', 'outcome', 'status', 'message'):
-                val = str(entry.get(k, '')).lower()
-                if any(keyword in val for keyword in fail_keywords):
-                    is_fail = True
-                    break
+            keywords = ['fail', 'error', 'leak', 'jailbreak', 'unsafe']
+            if any(
+                any(kw in str(v).lower() for kw in keywords)
+                for v in entry.values()
+                if isinstance(v, (str, list))
+            ):
+                is_fail = True
 
         if is_fail:
             probe = entry.get('probe') or entry.get('probes') or "Unknown Probe"
@@ -74,13 +95,13 @@ def standardize_garak_findings(garak_results):
             issue_title = f"Garak probe '{probe}' detected an issue in detector '{detector}'"
             severity = "High"
             impact = (
-                "AI model triggered a Garak security probe indicating a potential vulnerability, " 
-                "such as privacy leakage, prompt injection, jailbreaking, or unsafe output."
+                "AI model failed Garak security probe, indicating potential vulnerabilities "
+                "such as privacy leaks, prompt injections, unsafe outputs, or jailbreaking."
             )
             actionable = [
-                "Review the Garak output and model behavior carefully to identify cause.",
-                "Apply additional prompt filtering, red-teaming, or model fine-tuning as needed.",
-                "Monitor subsequent scans to verify remediation effectiveness."
+                "Review Garak detailed output and model behavior to determine cause.",
+                "Consider applying prompt filtering, fine-tuning, or further red-teaming.",
+                "Monitor future scans to validate remediation effectiveness."
             ]
             findings.append({
                 "issue_title": issue_title,
@@ -89,6 +110,8 @@ def standardize_garak_findings(garak_results):
                 "actionable": actionable,
                 "details": entry
             })
+
+    print(f"[INFO] Garak findings detected: {len(findings)}")
     return findings
 
 
@@ -140,7 +163,7 @@ def main():
     zap = load_json(args.zap)
     garak_raw = load_jsonl(args.garak)
 
-    # Standardize Garak findings before passing to prompt
+    # Convert Garak raw results into standardized findings
     garak_findings = standardize_garak_findings(garak_raw)
 
     api_key = os.environ.get("GEMINI_API_KEY")

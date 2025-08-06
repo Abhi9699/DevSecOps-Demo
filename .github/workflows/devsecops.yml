@@ -72,7 +72,7 @@ jobs:
           path: trufflehog-report.json
 
   garak-security-scan:
-    name: Generative AI/LLM Security Scan (Garak REST)
+    name: LLM/API Security Scan (Garak REST)
     timeout-minutes: 5
     runs-on: ubuntu-latest
     needs: build-test-lint

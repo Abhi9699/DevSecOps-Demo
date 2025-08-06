@@ -11,7 +11,14 @@ def load_json(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             obj = json.load(f)
-            for key in ("results", "matches", "vulnerabilities", "violations", "scan_results", "alerts"):
+            for key in (
+                "results",
+                "matches",
+                "vulnerabilities",
+                "violations",
+                "scan_results",
+                "alerts",
+            ):
                 if isinstance(obj, dict) and key in obj and isinstance(obj[key], list):
                     return obj[key]
             if isinstance(obj, dict) and "Results" in obj:
@@ -46,27 +53,41 @@ def load_jsonl(path):
 
 
 def build_prompt(trivy, semgrep, trufflehog, zap, garak):
+    """
+    Build a prompt instructing the AI to generate a concise, professional 
+    Markdown report designed for all audiences, dynamically handling all 
+    Garak probes with a standardized format regardless of probe type.
+    """
     prompt = (
-        "You are an expert security AI. Using ONLY the JSON or JSONL scan findings below, generate a concise, inclusive Markdown security report designed for all audiences (engineers, QA, managers, security leads):\n\n"
-        "- Start with a concise, plain English summary describing general security health, presence or absence of critical/high issues, and next actions. Do NOT repeat detailed issue findings in the summary.\n"
-        "- For each tool below, present findings grouped and numbered (provide for each finding: issue title, severity in plain language, impact, actionable bullets for remediation based only on data from the JSON/JSONL; include file/line if available).\n"
-        "- Use readable Markdown, concise and clear.\n"
-        "- Do NOT generate a title (it will be inserted by the pipeline script).\n\n"
-        "For the Garak tool results (provided in JSON Lines format), please follow these additional instructions:\n"
-        "- Treat every Garak entry as a security probe result: if an entry has \"status\": \"fail\" (case-insensitive) or outputs/messages indicating errors, incorrect answers, hallucinations, failures, anomalies, or unexpected or suspicious behavior, **ALWAYS** report it as a security vulnerability or weakness (even if it is not classical or obvious).\n"
-        "- For ALL Garak entries with \"status\": \"fail\", assign at least 'Low' severity if a more precise severity can't be deduced.\n"
-        "- Explain the observed failure briefly, leveraging fields such as \"probe_classname\", \"outputs\", and \"prompt\".\n"
-        "- Include the failed output excerpt verbatim for context.\n"
-        "- Provide clear, actionable remediation steps; if unable to infer, say \"Further investigation is required to determine remediation.\"\n"
-        "- If an entry is informational and shows no security weakness (e.g., \"status\": \"success\", \"ok\", or equivalent), explicitly state 'No vulnerability detected.'\n"
-        "- Each Garak failure must be reported as an individual finding—do NOT aggregate or omit failures.\n\n"
-        "## CI/CD Pipeline Scan Data (JSON below):\n"
-        "Trivy:\n" + json.dumps(trivy, indent=2)[:5000] + "\n\n"
-        "Semgrep:\n" + json.dumps(semgrep, indent=2)[:5000] + "\n\n"
-        "TruffleHog:\n" + json.dumps(trufflehog, indent=2)[:5000] + "\n\n"
-        "ZAP:\n" + json.dumps(zap, indent=2)[:5000] + "\n\n"
-        "Garak:\n" + json.dumps(garak, indent=2)[:5000] + "\n"
-        "---"
+        "You are an expert security AI. Using ONLY the JSON or JSONL scan findings below, generate a concise, inclusive Markdown security report designed "
+        "for all audiences (engineers, QA, managers, security leads):\n\n"
+        "- Start with a brief plain English summary describing general security health, presence or absence of critical/high issues, and recommended next steps. "
+        "Avoid repeating issue details in the summary.\n"
+        "- For each tool below, present findings grouped and numbered.\n"
+        "- For Trivy, Semgrep, TruffleHog, and ZAP, provide: issue title, severity (plain language), impact, and clear remediation steps. Include file/line info if available.\n\n"
+        "- For the Garak tool (JSON Lines format), for **each individual probe entry**, do the following:\n"
+        "  * Present the probe name (`probe_classname`), 'Prompt' issued, and the 'Model Output' verbatim.\n"
+        "  * If the `status` is 'fail' (case insensitive) or outputs/messages indicate suspicious, incorrect, or anomalous behavior, **treat it as a security vulnerability or weakness.**\n"
+        "  * Provide a short bullet-point list explaining 'What Went Wrong' based on the discrepancy or failure.\n"
+        "  * Clearly state the 'Impact' in simple language.\n"
+        "  * Provide easy-to-understand, actionable remediation steps.\n"
+        "  * If severity level can't be determined, assign at least 'Low'.\n"
+        "  * If the entry is informational (e.g., status 'success' or 'ok'), state 'No vulnerability detected.'\n"
+        "  * Do NOT aggregate or skip Garak entries; handle and report each separately.\n\n"
+        "Use clear Markdown headings, code blocks for prompts and outputs, and bullet points for explanations.\n"
+        "- Do NOT generate a title (it will be inserted externally).\n\n"
+        "## CI/CD Pipeline Scan Data (JSON below):\n\n"
+        "Trivy:\n"
+        + json.dumps(trivy, indent=2)[:5000]
+        + "\n\nSemgrep:\n"
+        + json.dumps(semgrep, indent=2)[:5000]
+        + "\n\nTruffleHog:\n"
+        + json.dumps(trufflehog, indent=2)[:5000]
+        + "\n\nZAP:\n"
+        + json.dumps(zap, indent=2)[:5000]
+        + "\n\nGarak:\n"
+        + json.dumps(garak, indent=2)[:5000]
+        + "\n---"
     )
     return prompt
 

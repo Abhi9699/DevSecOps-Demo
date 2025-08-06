@@ -42,35 +42,12 @@ def load_jsonl(path):
         print(f"[WARN] Could not parse {path}: {e}")
         return []
 
-def standardize_garak_findings(garak_results):
-    findings = []
-    for entry in garak_results:
-        fail = False
-        # Check various possible fail keys
-        if (entry.get('result') == 'FAIL' or 
-            entry.get('outcome') == 'FAIL' or 
-            entry.get('status') == 'FAIL' or
-            ('fail' in str(entry).lower() and ('detector' in entry or 'probe' in entry))):
-            fail = True
-        if fail:
-            findings.append({
-                "issue_title": f"{entry.get('probe', entry.get('probes', 'Unknown Probe'))} - {entry.get('detector', entry.get('detectors', 'Unknown Detector'))} FAIL",
-                "severity": "High",
-                "impact": "AI model failed Garak security probe, indicating possible model vulnerability, privacy leak, or unsafe behavior.",
-                "actionable": [
-                    "Review model responses and Garak output to identify misbehavior.",
-                    "Consider additional prompt filtering, red-teaming, or fine-tuning to mitigate this issue."
-                ],
-                "details": entry
-            })
-    return findings
-
 def build_prompt(trivy, semgrep, trufflehog, zap, garak):
+    # DO NOT ask AI to generate the title—inject it yourself.
     prompt = (
         "You are an expert security AI. Using ONLY the JSON scan findings below, generate a concise, inclusive Markdown security report designed for all audiences (engineers, QA, managers, security leads):\n\n"
         "- Start with a concise, plain English summary describing general security health, presence or absence of critical/high issues, and next actions. Do not repeat issue findings in the summary.\n"
         "- For each tool below, present findings grouped and numbered (provide for each finding: issue title, severity, impact in plain language, and actionable bullets for remediation based only on data from the JSON; include file/line if available).\n"
-        "- Treat any finding under the Garak section (including jailbreak, privacy leak, unsafe output, etc.) as a security issue. Highlight them clearly for model owners.\n"
         "- Use readable Markdown, concise and clear.\n"
         "- Do NOT generate a title (it will be inserted by the pipeline script).\n"
         "\n"
@@ -109,9 +86,7 @@ def main():
     semgrep = load_json(args.semgrep)
     trufflehog = load_json(args.trufflehog)
     zap = load_json(args.zap)
-    garak_raw = load_jsonl(args.garak)
-    # Standardize Garak findings
-    garak = standardize_garak_findings(garak_raw)
+    garak = load_jsonl(args.garak)
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:

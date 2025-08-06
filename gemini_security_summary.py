@@ -3,8 +3,6 @@ import json
 import os
 import sys
 import google.generativeai as genai
-from collections import defaultdict
-
 
 def load_json(path):
     if not os.path.isfile(path):
@@ -26,7 +24,6 @@ def load_json(path):
         print(f"[WARN] Could not parse {path}: {e}")
         return []
 
-
 def load_jsonl(path):
     if not os.path.isfile(path):
         return []
@@ -45,60 +42,28 @@ def load_jsonl(path):
         print(f"[WARN] Could not parse {path}: {e}")
         return []
 
-
-def extract_failed_garak_attempts(garak_entries):
-    """
-    Group attempts by probe_classname and return a list containing 
-    all failure attempts for probes that have any failure attempts.
-    """
-    probe_attempts = defaultdict(list)
-    for entry in garak_entries:
-        probe_name = entry.get("probe_classname", "N/A")
-        probe_attempts[probe_name].append(entry)
-
-    failed_attempts = []
-    for probe_name, attempts in probe_attempts.items():
-        has_failure = any(
-            str(entry.get("status")).lower() in ("2", "fail") for entry in attempts
-        )
-        if has_failure:
-            failed_attempts.extend(
-                [a for a in attempts if str(a.get("status")).lower() in ("2", "fail")]
-            )
-    return failed_attempts
-
-
-def build_prompt(trivy, semgrep, trufflehog, zap, garak_failed_attempts):
-    garak_json_text = json.dumps(garak_failed_attempts, indent=2)[:5000] if garak_failed_attempts else "[]"
+def build_prompt(trivy, semgrep, trufflehog, zap, garak):
+    garak_digest = [entry for entry in garak if entry.get("entry_type") == "digest"]
+    garak_eval = [entry for entry in garak if entry.get("entry_type") == "eval"]
 
     prompt = (
-        "You are an expert security AI. Using ONLY the JSON or JSONL scan findings below, generate a concise, inclusive Markdown security report "
-        "designed for all audiences (engineers, QA, managers, security leads):\n\n"
-        "- Begin with a brief summary describing overall security status, critical/high issues, and next actions.\n"
-        "- For each tool (Trivy, Semgrep, TruffleHog, ZAP), present findings grouped and numbered, including title, severity, impact, remediation, and file/line if available.\n"
-        "- Use clear Markdown, concise and professional.\n"
-        "- Do NOT generate a title (it will be added externally).\n\n"
-        "For Garak failed probe attempts (provided in JSON Lines format), each entry represents a failed probe attempt:\n"
-        "- For each failed attempt, include:\n"
-        "  * Probe Name (`probe_classname`)\n"
-        "  * Prompt issued (code block)\n"
-        "  * Model Output verbatim (code block)\n"
-        "  * Explanation why it failed (hallucination, misinformation, privacy violation, etc.)\n"
-        "  * Impact clearly described for all audiences\n"
-        "  * Practical remediation steps\n"
-        "  * Severity (default to 'Low' if unspecified)\n"
-        "- If no failed attempts are present, clearly state 'No vulnerabilities found in Garak scans.'\n"
-        "- Present only failures; omit success or informational entries.\n\n"
+        "You are an expert security AI. Using ONLY the JSON or JSONL scan findings below, generate a concise, inclusive Markdown security report designed for all audiences (engineers, QA, managers, security leads):\n\n"
+        "- Start with a concise, plain English summary describing general security health, presence or absence of critical/high issues, and next actions. Do not repeat issue findings in the summary.\n"
+        "- For each tool below, present findings grouped and numbered (provide for each finding: issue title, severity, impact in plain language, and actionable bullets for remediation based only on data from the JSON; include file/line if available).\n"
+        "- For Garak, clearly indicate if the model is hallucinating, producing unsafe content, or misinforming. Include test probe name, detector, pass/fail count, and human-readable interpretation from `detector_descr` or `absolute_comment`.\n"
+        "- Use readable Markdown, concise and clear.\n"
+        "- Do NOT generate a title (it will be inserted by the pipeline script).\n"
+        "\n"
         "## CI/CD Pipeline Scan Data (JSON below):\n"
         "Trivy:\n" + json.dumps(trivy, indent=2)[:5000] + "\n\n"
         "Semgrep:\n" + json.dumps(semgrep, indent=2)[:5000] + "\n\n"
         "TruffleHog:\n" + json.dumps(trufflehog, indent=2)[:5000] + "\n\n"
         "ZAP:\n" + json.dumps(zap, indent=2)[:5000] + "\n\n"
-        "Garak Failed Attempts:\n" + garak_json_text + "\n"
+        "Garak Digest Entries:\n" + json.dumps(garak_digest, indent=2)[:5000] + "\n\n"
+        "Garak Eval Results:\n" + json.dumps(garak_eval, indent=2)[:5000] + "\n"
         "---"
     )
     return prompt
-
 
 def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
     genai.configure(api_key=api_key)
@@ -110,7 +75,6 @@ def summarize_with_gemini(prompt, api_key, model_name="gemini-2.0-flash"):
     except Exception as e:
         print(f"[ERROR] Gemini API error: {e}")
         return "AI summary failed."
-
 
 def main():
     parser = argparse.ArgumentParser(description="AI-driven security scan report for CI/CD pipelines with fixed title.")
@@ -128,14 +92,12 @@ def main():
     zap = load_json(args.zap)
     garak = load_jsonl(args.garak)
 
-    garak_failed_attempts = extract_failed_garak_attempts(garak)
-
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         print("[ERROR] GEMINI_API_KEY environment variable not set.")
         sys.exit(1)
 
-    prompt = build_prompt(trivy, semgrep, trufflehog, zap, garak_failed_attempts)
+    prompt = build_prompt(trivy, semgrep, trufflehog, zap, garak)
     report_body = summarize_with_gemini(prompt, api_key)
 
     fixed_title = "# AI-Driven CI/CD Security Scan Report\n\n"
@@ -152,7 +114,6 @@ def main():
     print("\n--- Report Preview ---\n")
     print(report[:2000])
     print("\n--- End of Preview ---")
-
 
 if __name__ == "__main__":
     main()

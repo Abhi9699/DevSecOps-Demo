@@ -44,7 +44,7 @@ app.get('/api/search', (req, res) => {
 });
 
 // Feedback endpoint with XSS vulnerability
-app.post('/api/feedback', (req, res) => {
+app.post('/api/feedback', bodyParser.json(), bodyParser.urlencoded({ extended: true }), (req, res) => {
   const { name, message } = req.body;
   
   // VULNERABILITY: Directly reflecting user input without sanitization

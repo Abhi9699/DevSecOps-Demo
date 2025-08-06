@@ -3,6 +3,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { FiMessageCircle, FiX, FiSend } from 'react-icons/fi';
 import './chatbot.css';
 
 interface Message {
@@ -56,7 +57,8 @@ export default function Chatbot() {
       });
 
       if (!response.ok) {
-        throw new Error('Network response was not ok');
+        const errorText = await response.text();
+        throw new Error(`Network response was not ok: ${response.status} - ${errorText}`);
       }
 
       const data = await response.json();
@@ -72,13 +74,13 @@ export default function Chatbot() {
   return (
     <div>
       <button className="chatbot-toggler" onClick={toggleChat}>
-        <span className="material-icons">{isOpen ? 'close' : 'chat'}</span>
+        {isOpen ? <FiX size={24} /> : <FiMessageCircle size={24} />}
       </button>
       {isOpen && (
         <div className="chatbot-container">
           <div className="chatbot-header">
             <h2>Chatbot</h2>
-            <button className="close-btn" onClick={toggleChat}>&times;</button>
+            <button className="close-btn" onClick={toggleChat}><FiX size={20} /></button>
           </div>
           <div className="chatbot-messages">
             {messages.map((msg, index) => (
@@ -96,7 +98,7 @@ export default function Chatbot() {
               placeholder="Type a message..."
               autoFocus
             />
-            <button type="submit">Send</button>
+            <button type="submit"><FiSend size={20} /></button>
           </form>
         </div>
       )}

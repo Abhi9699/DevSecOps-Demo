@@ -7,10 +7,9 @@ console.log('GEMINI_API_KEY loaded:', !!process.env.GEMINI_API_KEY); // Log to c
 
 export async function POST(req: NextRequest) {
   try {
-            const body = await req.text();
-    const { message } = JSON.parse(body);
+            const { message } = await req.json();
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash'});
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash'});
     const chat = model.startChat({
       history: [
         {
@@ -28,8 +27,7 @@ export async function POST(req: NextRequest) {
     });
 
     const result = await chat.sendMessage(message);
-    const response = await result.response;
-        const text = await response.text();
+    const text = result.response.text();
 
     return NextResponse.json({ reply: text });
   } catch (error) {
